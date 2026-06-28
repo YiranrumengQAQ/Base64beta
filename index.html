@@ -1220,7 +1220,6 @@
             // ─────────────────────────────────────
             // 超级庞大的低端处理器库 (静态常量，零内存泄漏)
             // 收录大众、小众、冷门型号，覆盖几乎所有低于5000元手机的芯片
-            // 已特别强化骁龙695等热门中低端芯片的变体识别
             // ─────────────────────────────────────
             const LOW_END_PROCESSORS = new Set([
                 // 联发科 Helio 系列 (全部非旗舰)
@@ -1295,55 +1294,49 @@
             }
 
             // ─────────────────────────────────────
-            // 超精准低端设备检测（苹果全放行）
+            // 超精准低端设备检测（苹果全放行，异常或拦截一律判定为低端）
             // ─────────────────────────────────────
             function isAppleDevice() {
                 return /iPhone|iPad|Macintosh/i.test(navigator.userAgent) && !/Android/i.test(navigator.userAgent);
             }
             function detectLowEndDevice() {
-                if (isAppleDevice()) return false; // 苹果设备一律放行，享受最美界面
+                try {
+                    if (isAppleDevice()) return false;
 
-                let score = 0;
+                    // 处理器黑名单优先，命中直接降级
+                    if (isLowEndProcessor(navigator.userAgent)) return true;
 
-                // 1. 处理器低端检测 (权重极高)
-                if (isLowEndProcessor(navigator.userAgent)) {
-                    score += 4;
-                }
+                    // 多维评分兜底
+                    let score = 0;
 
-                // 2. WebGL 软件渲染器检测
-                const canvas = document.createElement('canvas');
-                const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
-                if (!gl) {
-                    score += 2;
-                } else {
-                    const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
-                    if (debugInfo) {
-                        const renderer = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
-                        if (/swiftshader|llvmpipe|softpipe/i.test(renderer)) score += 2;
+                    const canvas = document.createElement('canvas');
+                    const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+                    if (!gl) {
+                        score += 2;
+                    } else {
+                        const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+                        if (debugInfo) {
+                            const renderer = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
+                            if (/swiftshader|llvmpipe|softpipe/i.test(renderer)) score += 2;
+                        }
                     }
+
+                    const cores = navigator.hardwareConcurrency || 4;
+                    if (cores <= 4) score += 2;
+
+                    const memory = navigator.deviceMemory || 4;
+                    if (memory <= 4) score += 2;
+
+                    const pixels = screen.width * screen.height;
+                    if (pixels < 720 * 1280) score += 2;
+
+                    if (!CSS.supports('backdrop-filter', 'blur(1px)')) score += 1;
+
+                    return score >= 5;
+                } catch (e) {
+                    // 任何异常（如API被拦截）强制判定为低端设备
+                    return true;
                 }
-
-                // 3. CPU 核心数 ≤ 4
-                const cores = navigator.hardwareConcurrency || 4;
-                if (cores <= 4) score += 2;
-
-                // 4. 设备内存 ≤ 4GB
-                const memory = navigator.deviceMemory || 4;
-                if (memory <= 4) score += 2;
-
-                // 5. 屏幕物理分辨率过低
-                const pixels = screen.width * screen.height;
-                if (pixels < 720 * 1280) score += 2;
-
-                // 6. 不支持 CSS backdrop-filter
-                if (!CSS.supports('backdrop-filter', 'blur(1px)')) score += 1;
-
-                // 综合评分 ≥ 5 即视为低端设备
-                return score >= 5;
-            }
-
-            if (detectLowEndDevice()) {
-                document.body.classList.add('low-end-device');
             }
 
             // ─────────────────────────────────────
@@ -2257,6 +2250,41 @@
             }
 
             // ─────────────────────────────────────
+            // 实时检测调度（高性能，15秒间隔，页面隐藏时暂停）
+            // ─────────────────────────────────────
+            let realtimeTimerId = null;
+            function checkAndApplyDeviceClass() {
+                try {
+                    const isLow = detectLowEndDevice();
+                    document.body.classList.toggle('low-end-device', isLow);
+                } catch (e) {
+                    document.body.classList.add('low-end-device');
+                }
+            }
+
+            function startRealtimeDetection() {
+                if (realtimeTimerId !== null) return;
+                realtimeTimerId = safeSetInterval(() => {
+                    if (!document.hidden) {
+                        checkAndApplyDeviceClass();
+                    }
+                }, 15000);
+            }
+
+            function stopRealtimeDetection() {
+                if (realtimeTimerId !== null) {
+                    clearInterval(realtimeTimerId);
+                    ACTIVE_TIMERS.delete(realtimeTimerId);
+                    realtimeTimerId = null;
+                }
+            }
+
+            // 初始检测
+            checkAndApplyDeviceClass();
+            // 启动实时监控
+            startRealtimeDetection();
+
+            // ─────────────────────────────────────
             // 初始化
             // ─────────────────────────────────────
             function initialize() {
@@ -2273,6 +2301,7 @@
             // 页面卸载清理
             // ─────────────────────────────────────
             function cleanup() {
+                stopRealtimeDetection(); // 停止实时检测
                 if (DOM._cssDebounce && DOM._cssDebounce.cancel) DOM._cssDebounce.cancel();
                 persistSettings.cancel();
                 clearAllTimers();
